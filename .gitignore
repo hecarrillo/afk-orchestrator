@@ -1,7 +1,4 @@
-# Build output
-dist/
-
-# Node
+# Node (dist/ IS committed — consumers install from git URL without a build step)
 node_modules/
 npm-debug.log*
 

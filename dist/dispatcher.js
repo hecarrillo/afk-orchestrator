@@ -1,0 +1,223 @@
+// One issue, end to end: worktree → implementer agent → reviewer agent →
+// (always) PR + label transition → cleanup. Returns a structured outcome the
+// caller can log or persist.
+//
+// Key behaviour: the dispatcher ALWAYS pushes the branch and opens (or reuses)
+// a PR — regardless of whether the auto-reviewer approves or requests changes.
+// The PR is the canonical review surface. External tools (Claude review
+// action, CodeRabbit, security scanners) post to PRs, not issues, so the PR
+// has to exist for them to fire. The auto-reviewer's verdict goes on the PR
+// as a review-comment; humans add their feedback the same way (via afk:qa).
+//
+// On rework dispatch, the worktree adopts the existing branch and the
+// implementer prompt is augmented with every prior PR comment / review.
+import { readFile, unlink } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { addLabels, removeLabels, createPullRequest, reviewPullRequest, commentOnIssue, findOpenPrForBranch, listPrFeedback, bumpAttemptCount, } from "./gh.js";
+import { labels } from "./labels.js";
+import { createOrAdoptWorktree, pushBranch, commitCount, diffStats, } from "./worktree.js";
+import { runClaude } from "./claude.js";
+import { implementerPrompt, reviewerPrompt } from "./prompts.js";
+import { config } from "./config.js";
+export async function dispatch(issue) {
+    const start = Date.now();
+    const attempt = await bumpAttemptCount(issue);
+    log(issue, `starting (attempt ${attempt})`);
+    await transitionToInProgress(issue);
+    let worktree;
+    let isRework = false;
+    try {
+        const result = await createOrAdoptWorktree(issue.number);
+        worktree = result.wt;
+        isRework = result.isRework;
+        log(issue, `worktree: ${worktree.path}${isRework ? " (rework — adopted prior branch)" : ""}`);
+        // On rework, find the existing PR and pull its comment thread for the
+        // implementer prompt. On a fresh attempt there's no PR yet.
+        let existingPr = null;
+        let priorFeedback = [];
+        if (isRework) {
+            existingPr = await findOpenPrForBranch(worktree.branch);
+            if (existingPr) {
+                priorFeedback = await listPrFeedback(existingPr.number);
+                log(issue, `loaded ${priorFeedback.length} prior comment(s) from PR #${existingPr.number}`);
+            }
+        }
+        // ── implementer ────────────────────────────────────────────────────────
+        log(issue, "implementer dispatching");
+        const impl = await runClaude({
+            cwd: worktree.path,
+            prompt: implementerPrompt(issue, priorFeedback),
+            timeoutMs: config.implementerTimeoutMs,
+            label: `impl-${issue.number}`,
+        });
+        if (impl.timedOut) {
+            return await terminateAsFailed(issue, worktree, attempt, start, {
+                kind: "implementer-failed", exitCode: -1, stderr: "timeout", attempt,
+            }, "Implementer timed out.");
+        }
+        if (impl.exitCode !== 0) {
+            return await terminateAsFailed(issue, worktree, attempt, start, {
+                kind: "implementer-failed", exitCode: impl.exitCode, stderr: impl.stderr, attempt,
+            }, `Implementer exited ${impl.exitCode}.\n\nstderr:\n\`\`\`\n${impl.stderr.slice(-2000)}\n\`\`\``);
+        }
+        const blockerPath = join(worktree.path, "AFK_BLOCKED.md");
+        if (existsSync(blockerPath)) {
+            const blockerReport = await readFile(blockerPath, "utf8");
+            return await terminateAsFailed(issue, worktree, attempt, start, {
+                kind: "implementer-blocked", blockerReport, attempt,
+            }, `Implementer reported a blocker:\n\n${blockerReport}`);
+        }
+        const commits = await commitCount(worktree);
+        if (commits === 0) {
+            return await terminateAsFailed(issue, worktree, attempt, start, {
+                kind: "implementer-no-commits", attempt, isRework,
+            }, "Implementer exited cleanly but made zero commits.");
+        }
+        log(issue, `implementer made ${commits} commit(s)`);
+        // ── reviewer ───────────────────────────────────────────────────────────
+        await transitionToNeedsReview(issue);
+        const stats = await diffStats(worktree);
+        log(issue, "reviewer dispatching");
+        const rev = await runClaude({
+            cwd: worktree.path,
+            prompt: reviewerPrompt(issue, stats),
+            timeoutMs: config.reviewerTimeoutMs,
+            label: `review-${issue.number}`,
+        });
+        if (rev.timedOut || rev.exitCode !== 0) {
+            return await terminateAsFailed(issue, worktree, attempt, start, {
+                kind: "reviewer-failed", exitCode: rev.exitCode, stderr: rev.stderr, attempt,
+            }, `Reviewer ${rev.timedOut ? "timed out" : `exited ${rev.exitCode}`}.\n\nstderr:\n\`\`\`\n${rev.stderr.slice(-2000)}\n\`\`\``);
+        }
+        const reviewPath = join(worktree.path, "AFK_REVIEW.md");
+        if (!existsSync(reviewPath)) {
+            return await terminateAsFailed(issue, worktree, attempt, start, {
+                kind: "reviewer-no-verdict", attempt,
+            }, "Reviewer did not produce AFK_REVIEW.md.");
+        }
+        const reviewRaw = await readFile(reviewPath, "utf8");
+        const parsed = parseReview(reviewRaw);
+        if (!parsed) {
+            return await terminateAsFailed(issue, worktree, attempt, start, {
+                kind: "reviewer-no-verdict", attempt,
+            }, "Reviewer's AFK_REVIEW.md did not start with a parseable verdict line.");
+        }
+        log(issue, `reviewer verdict: ${parsed.verdict}`);
+        await unlink(reviewPath).catch(() => { });
+        // ── PR (always create or reuse, regardless of verdict) ─────────────────
+        await pushBranch(worktree);
+        let prNumber;
+        let prUrl;
+        if (existingPr) {
+            prNumber = existingPr.number;
+            prUrl = existingPr.url;
+            log(issue, `pushed to existing PR #${prNumber}`);
+        }
+        else {
+            const prTitle = `${truncate(issue.title, 70)} (closes #${issue.number})`;
+            const prBody = renderPrBody(issue.number, parsed, attempt);
+            prUrl = await createPullRequest({ title: prTitle, body: prBody, head: worktree.branch });
+            const n = parsePrNumber(prUrl);
+            if (n === null) {
+                return await terminateAsFailed(issue, worktree, attempt, start, {
+                    kind: "reviewer-failed", exitCode: 0, stderr: "couldn't parse PR number from URL", attempt,
+                }, `Could not parse PR number from URL: ${prUrl}`);
+            }
+            prNumber = n;
+            log(issue, `opened PR #${prNumber}: ${prUrl}`);
+        }
+        // Auto-reviewer posts its verdict as a PR review-comment. Always
+        // `--comment` (not --approve / --request-changes) — the human is the
+        // actual approver, and GitHub blocks self-approve/reject on owner PRs.
+        const verdictLabel = parsed.verdict === "approve" ? "APPROVE" : "REQUEST CHANGES";
+        const reviewBody = `**AFK reviewer (attempt ${attempt}) verdict: ${verdictLabel}** — informational; ${parsed.verdict === "approve" ? "awaiting human QA" : "implementer will re-run on next planner round"}.\n\n${parsed.body}`;
+        await reviewPullRequest({ prNumber, verdict: "comment", body: reviewBody }).catch(err => {
+            process.stderr.write(`[dispatch ${issue.number}] WARN: could not post PR review (${err instanceof Error ? err.message : String(err)}); report is in the PR body.\n`);
+        });
+        // ── label transition ──────────────────────────────────────────────────
+        if (parsed.verdict === "approve") {
+            await transitionToNeedsHumanQa(issue, prUrl);
+            return {
+                issue, worktree,
+                outcome: { kind: "approved", prUrl, reviewerReport: parsed.body, commits, attempt, isRework },
+                elapsedMs: Date.now() - start,
+            };
+        }
+        else {
+            // Auto-reviewer requested changes — drop back to needs-changes so the
+            // next planner round picks it up automatically (with the new PR review
+            // included in priorFeedback).
+            await removeLabels(issue.number, [labels.inProgress, labels.needsReview, labels.needsHumanQa]).catch(() => { });
+            await addLabels(issue.number, [labels.needsChanges]);
+            await commentOnIssue(issue.number, `Auto-reviewer requested changes on attempt ${attempt}: ${prUrl}\n\nPlanner will re-dispatch on next round with prior comments inlined.`);
+            return {
+                issue, worktree,
+                outcome: { kind: "needs-changes", prUrl, reviewerReport: parsed.body, commits, attempt, isRework },
+                elapsedMs: Date.now() - start,
+            };
+        }
+    }
+    catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await transitionToNeedsChangesGenerically(issue, `Orchestrator error: ${msg}`).catch(() => { });
+        throw err;
+    }
+}
+async function terminateAsFailed(issue, worktree, _attempt, start, outcome, message) {
+    await transitionToNeedsChangesGenerically(issue, message);
+    return { issue, worktree, outcome, elapsedMs: Date.now() - start };
+}
+function parseReview(raw) {
+    const lines = raw.split("\n");
+    const first = (lines[0] ?? "").trim();
+    const verdict = first === "verdict: approve" ? "approve" :
+        first === "verdict: request-changes" ? "request-changes" :
+            null;
+    if (!verdict)
+        return null;
+    const sep = lines.findIndex(l => l.trim() === "---");
+    const body = sep >= 0 ? lines.slice(sep + 1).join("\n").trim() : lines.slice(1).join("\n").trim();
+    return { verdict, body };
+}
+function parsePrNumber(url) {
+    const m = url.match(/\/pull\/(\d+)/);
+    return m && m[1] ? Number(m[1]) : null;
+}
+function truncate(s, max) {
+    return s.length <= max ? s : s.slice(0, max - 1) + "…";
+}
+function renderPrBody(issueNumber, parsed, attempt) {
+    return `Resolves #${issueNumber}.
+
+## Reviewer report (automated, attempt ${attempt})
+
+**Verdict: ${parsed.verdict.toUpperCase()}**
+
+${parsed.body}
+
+---
+
+🤖 Generated by AFK orchestrator. ${parsed.verdict === "approve" ? "Awaiting human QA." : "Implementer will re-run on next planner round if not approved."}`;
+}
+async function transitionToInProgress(issue) {
+    await removeLabels(issue.number, [labels.prdReady, labels.needsChanges, labels.needsReview, labels.needsHumanQa]).catch(() => { });
+    await addLabels(issue.number, [labels.inProgress]);
+}
+async function transitionToNeedsReview(issue) {
+    await removeLabels(issue.number, [labels.inProgress]).catch(() => { });
+    await addLabels(issue.number, [labels.needsReview]);
+}
+async function transitionToNeedsHumanQa(issue, prUrl) {
+    await removeLabels(issue.number, [labels.inProgress, labels.needsReview, labels.needsChanges]).catch(() => { });
+    await addLabels(issue.number, [labels.needsHumanQa]);
+    await commentOnIssue(issue.number, `AFK reviewer approved; PR open for human QA: ${prUrl}`);
+}
+async function transitionToNeedsChangesGenerically(issue, body) {
+    await removeLabels(issue.number, [labels.inProgress, labels.needsReview]).catch(() => { });
+    await addLabels(issue.number, [labels.needsChanges]);
+    await commentOnIssue(issue.number, body);
+}
+function log(issue, msg) {
+    process.stdout.write(`[dispatch ${issue.number}] ${msg}\n`);
+}
