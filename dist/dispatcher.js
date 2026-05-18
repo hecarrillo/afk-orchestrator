@@ -20,6 +20,7 @@ import { createOrAdoptWorktree, pushBranch, commitCount, diffStats, } from "./wo
 import { runClaude } from "./claude.js";
 import { implementerPrompt, reviewerPrompt } from "./prompts.js";
 import { config } from "./config.js";
+import { send as notify } from "./subscribers/telegram.js";
 export async function dispatch(issue) {
     const start = Date.now();
     const attempt = await bumpAttemptCount(issue);
@@ -32,6 +33,7 @@ export async function dispatch(issue) {
         worktree = result.wt;
         isRework = result.isRework;
         log(issue, `worktree: ${worktree.path}${isRework ? " (rework — adopted prior branch)" : ""}`);
+        void notify({ kind: "dispatch.started", issueNumber: issue.number, title: issue.title, attempt, isRework });
         // On rework, find the existing PR and pull its comment thread for the
         // implementer prompt. On a fresh attempt there's no PR yet.
         let existingPr = null;
@@ -75,6 +77,7 @@ export async function dispatch(issue) {
             }, "Implementer exited cleanly but made zero commits.");
         }
         log(issue, `implementer made ${commits} commit(s)`);
+        void notify({ kind: "implementer.finished", issueNumber: issue.number, commits, elapsedMs: impl.elapsedMs });
         // ── reviewer ───────────────────────────────────────────────────────────
         await transitionToNeedsReview(issue);
         const stats = await diffStats(worktree);
@@ -105,6 +108,7 @@ export async function dispatch(issue) {
         }
         log(issue, `reviewer verdict: ${parsed.verdict}`);
         await unlink(reviewPath).catch(() => { });
+        void notify({ kind: "reviewer.verdict", issueNumber: issue.number, verdict: parsed.verdict });
         // ── PR (always create or reuse, regardless of verdict) ─────────────────
         await pushBranch(worktree);
         let prNumber;
@@ -113,6 +117,7 @@ export async function dispatch(issue) {
             prNumber = existingPr.number;
             prUrl = existingPr.url;
             log(issue, `pushed to existing PR #${prNumber}`);
+            void notify({ kind: "pr.updated", issueNumber: issue.number, prNumber, prUrl, attempt });
         }
         else {
             const prTitle = `${truncate(issue.title, 70)} (closes #${issue.number})`;
@@ -126,6 +131,7 @@ export async function dispatch(issue) {
             }
             prNumber = n;
             log(issue, `opened PR #${prNumber}: ${prUrl}`);
+            void notify({ kind: "pr.opened", issueNumber: issue.number, prNumber, prUrl });
         }
         // Auto-reviewer posts its verdict as a PR review-comment. Always
         // `--comment` (not --approve / --request-changes) — the human is the
@@ -138,6 +144,7 @@ export async function dispatch(issue) {
         // ── label transition ──────────────────────────────────────────────────
         if (parsed.verdict === "approve") {
             await transitionToNeedsHumanQa(issue, prUrl);
+            void notify({ kind: "outcome", issueNumber: issue.number, outcomeKind: "approved", prUrl });
             return {
                 issue, worktree,
                 outcome: { kind: "approved", prUrl, reviewerReport: parsed.body, commits, attempt, isRework },
@@ -151,6 +158,7 @@ export async function dispatch(issue) {
             await removeLabels(issue.number, [labels.inProgress, labels.needsReview, labels.needsHumanQa]).catch(() => { });
             await addLabels(issue.number, [labels.needsChanges]);
             await commentOnIssue(issue.number, `Auto-reviewer requested changes on attempt ${attempt}: ${prUrl}\n\nPlanner will re-dispatch on next round with prior comments inlined.`);
+            void notify({ kind: "outcome", issueNumber: issue.number, outcomeKind: "needs-changes", prUrl });
             return {
                 issue, worktree,
                 outcome: { kind: "needs-changes", prUrl, reviewerReport: parsed.body, commits, attempt, isRework },
@@ -166,6 +174,7 @@ export async function dispatch(issue) {
 }
 async function terminateAsFailed(issue, worktree, _attempt, start, outcome, message) {
     await transitionToNeedsChangesGenerically(issue, message);
+    void notify({ kind: "failure", issueNumber: issue.number, reason: message.split("\n")[0] ?? "unknown" });
     return { issue, worktree, outcome, elapsedMs: Date.now() - start };
 }
 function parseReview(raw) {

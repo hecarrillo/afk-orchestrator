@@ -98,6 +98,45 @@ Secrets stay in env vars:
 - `AFK_REPO` — overrides `repo` (useful for one-off runs against a different repo)
 - All other env overrides documented in [`src/config.ts`](./src/config.ts)
 
+## Telegram setup
+
+Outbound milestone notifications (dispatch start, implementer done, reviewer verdict, PR opened/updated, round complete, failures, cap-hits).
+
+**1. Create the bot.** In Telegram, message `@BotFather`:
+```
+/newbot
+<a name, e.g. "Hector AFK">
+<a username ending in "bot", e.g. "hector_afk_bot">
+```
+BotFather replies with a token like `123456789:ABC-def-GHI...`. Keep it private.
+
+**2. Get your chat ID.** Send any message to your new bot. Then:
+```sh
+curl -s "https://api.telegram.org/bot<TOKEN>/getUpdates" | jq '.result[0].message.chat.id'
+```
+Returns a number like `987654321`.
+
+**3. Wire it up.** In `~/.zshrc`:
+```sh
+export AFK_TELEGRAM_BOT_TOKEN="123456789:ABC-def-GHI..."
+```
+
+In your project's `afk.config.json`:
+```json
+{
+  "notifications": {
+    "telegram": { "chatId": "987654321" }
+  }
+}
+```
+
+**4. Verify.**
+```sh
+afk telegram-test
+```
+
+If either the env var or `chatId` is missing, all sends are silent no-ops — the orchestrator stays usable without Telegram. Errors talking to Telegram print to stderr but never fail a dispatch.
+
 ## Commands
 
 ```sh

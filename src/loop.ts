@@ -12,6 +12,7 @@
 import { plan } from "./planner.ts";
 import { dispatch, type DispatchResult } from "./dispatcher.ts";
 import { config } from "./config.ts";
+import { send as notify } from "./subscribers/telegram.ts";
 
 export interface LoopSummary {
   rounds: number;
@@ -52,19 +53,22 @@ export async function loop(): Promise<LoopSummary> {
 
     // Fan out the ready slice in parallel; wait for all to settle.
     const settled = await Promise.allSettled(p.ready.map(dispatch));
+    let roundApproved = 0, roundNeedsChanges = 0, roundFailed = 0;
     for (const s of settled) {
       if (s.status === "fulfilled") {
         results.push(s.value);
         switch (s.value.outcome.kind) {
-          case "approved":       approved++; break;
-          case "needs-changes":  needsChanges++; break;
-          default:               failed++;
+          case "approved":       approved++; roundApproved++; break;
+          case "needs-changes":  needsChanges++; roundNeedsChanges++; break;
+          default:               failed++; roundFailed++;
         }
       } else {
         failed++;
+        roundFailed++;
         process.stderr.write(`Dispatch error: ${s.reason}\n`);
       }
     }
+    void notify({ kind: "round.complete", round, approved: roundApproved, needsChanges: roundNeedsChanges, failed: roundFailed });
   }
 
   if (round > config.maxRounds) reason = "max-rounds";

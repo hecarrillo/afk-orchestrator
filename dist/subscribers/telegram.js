@@ -1,30 +1,107 @@
 // Telegram milestone subscriber. Outbound only — no inbound bot, no daemon.
-// Configured via env (AFK_TELEGRAM_BOT_TOKEN) + afk.config.json (chatId).
-// If either is missing, every send is a no-op so the orchestrator stays usable.
 //
-// v0.1: STUB. Implementation lands in a follow-up. Exposed via `afk telegram-test`
-// so you can validate your bot setup without running a real dispatch.
+// Configured via env (AFK_TELEGRAM_BOT_TOKEN) + afk.config.json
+// (notifications.telegram.chatId). If either is missing every call is a
+// silent no-op so the orchestrator stays usable without notifications.
+//
+// Sends to https://api.telegram.org/bot<token>/sendMessage with Markdown
+// formatting. Best-effort: if the send fails, we log to stderr and continue.
 import { config } from "../config.js";
 const TOKEN_ENV = "AFK_TELEGRAM_BOT_TOKEN";
+const API_BASE = "https://api.telegram.org";
 function enabled() {
     return Boolean(process.env[TOKEN_ENV]) && Boolean(config.notifications?.telegram?.chatId);
 }
-export async function send(_event) {
+function repoLabel() {
+    // Just the "name" half of "owner/name" — enough to disambiguate when
+    // pinged from multiple projects without taking up half the message.
+    return config.repo.split("/").pop() ?? config.repo;
+}
+function format(event) {
+    const r = repoLabel();
+    switch (event.kind) {
+        case "dispatch.started":
+            return event.isRework
+                ? `🔁 *${r}* — rework attempt ${event.attempt} on #${event.issueNumber}\n${event.title}`
+                : `🚀 *${r}* — dispatching #${event.issueNumber} (attempt ${event.attempt})\n${event.title}`;
+        case "implementer.finished": {
+            const minutes = (event.elapsedMs / 60000).toFixed(1);
+            return `✅ *${r}* — #${event.issueNumber} implementer done — ${event.commits} commit(s) in ${minutes}m`;
+        }
+        case "reviewer.verdict": {
+            const emoji = event.verdict === "approve" ? "👁" : "↩️";
+            const text = event.verdict === "approve" ? "APPROVE" : "REQUEST CHANGES";
+            return `${emoji} *${r}* — #${event.issueNumber} reviewer: *${text}*`;
+        }
+        case "pr.opened":
+            return `📬 *${r}* — PR [#${event.prNumber}](${event.prUrl}) opened for #${event.issueNumber} — awaiting human QA`;
+        case "pr.updated":
+            return `🔄 *${r}* — PR [#${event.prNumber}](${event.prUrl}) updated (attempt ${event.attempt})`;
+        case "outcome": {
+            if (event.outcomeKind === "approved" && event.prUrl)
+                return `🟢 *${r}* — #${event.issueNumber} approved by auto-reviewer · ${event.prUrl}`;
+            if (event.outcomeKind === "needs-changes")
+                return `🟡 *${r}* — #${event.issueNumber} needs changes — auto-rework next round`;
+            return `⚪️ *${r}* — #${event.issueNumber} outcome: ${event.outcomeKind}`;
+        }
+        case "round.complete":
+            return `🏁 *${r}* — round ${event.round} complete · approved ${event.approved} · changes ${event.needsChanges} · failed ${event.failed}`;
+        case "cap.hit":
+            return `⛔ *${r}* — #${event.issueNumber} hit attempt cap (${event.attempts}) — needs human`;
+        case "failure":
+            return `❌ *${r}* — #${event.issueNumber} failed: ${event.reason}`;
+    }
+}
+async function postMessage(text) {
+    const token = process.env[TOKEN_ENV];
+    const chatId = config.notifications?.telegram?.chatId;
+    if (!token || !chatId)
+        return;
+    const url = `${API_BASE}/bot${token}/sendMessage`;
+    try {
+        const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                chat_id: chatId,
+                text,
+                parse_mode: "Markdown",
+                disable_web_page_preview: true,
+            }),
+        });
+        if (!res.ok) {
+            const body = await res.text().catch(() => "");
+            process.stderr.write(`[telegram] HTTP ${res.status}: ${body.slice(0, 200)}\n`);
+        }
+    }
+    catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        process.stderr.write(`[telegram] send failed: ${msg}\n`);
+    }
+}
+export async function send(event) {
     if (!enabled())
         return;
-    // TODO: implement POST to https://api.telegram.org/bot<token>/sendMessage
-    // with a Markdown-formatted body per `kind`.
-    process.stderr.write(`[telegram] (stub) would send: ${_event.kind} #${"issueNumber" in _event ? _event.issueNumber : "n/a"}\n`);
+    await postMessage(format(event));
 }
 export async function test() {
     if (!process.env[TOKEN_ENV]) {
-        process.stderr.write(`missing ${TOKEN_ENV} env var\n`);
+        process.stderr.write(`missing ${TOKEN_ENV} env var.\n` +
+            `Set it in your shell rc:\n` +
+            `  export ${TOKEN_ENV}="<your_bot_token_from_BotFather>"\n`);
         return 2;
     }
     if (!config.notifications?.telegram?.chatId) {
-        process.stderr.write(`no notifications.telegram.chatId in ${config.configPath}\n`);
+        process.stderr.write(`no notifications.telegram.chatId in ${config.configPath}.\n` +
+            `Add to afk.config.json:\n` +
+            `  "notifications": { "telegram": { "chatId": "<your_chat_id>" } }\n`);
         return 2;
     }
-    process.stdout.write(`(stub) would send a test message to chat ${config.notifications.telegram.chatId}\n`);
+    const repoName = repoLabel();
+    const text = `🔧 *${repoName}* — AFK orchestrator test\n` +
+        `If you see this, your bot token and chat ID are wired up correctly.\n` +
+        `_${new Date().toLocaleString()}_`;
+    await postMessage(text);
+    process.stdout.write(`sent test message to chat ${config.notifications.telegram.chatId}\n`);
     return 0;
 }

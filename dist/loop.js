@@ -11,6 +11,7 @@
 import { plan } from "./planner.js";
 import { dispatch } from "./dispatcher.js";
 import { config } from "./config.js";
+import { send as notify } from "./subscribers/telegram.js";
 export async function loop() {
     const start = Date.now();
     const results = [];
@@ -37,24 +38,31 @@ export async function loop() {
         }
         // Fan out the ready slice in parallel; wait for all to settle.
         const settled = await Promise.allSettled(p.ready.map(dispatch));
+        let roundApproved = 0, roundNeedsChanges = 0, roundFailed = 0;
         for (const s of settled) {
             if (s.status === "fulfilled") {
                 results.push(s.value);
                 switch (s.value.outcome.kind) {
                     case "approved":
                         approved++;
+                        roundApproved++;
                         break;
                     case "needs-changes":
                         needsChanges++;
+                        roundNeedsChanges++;
                         break;
-                    default: failed++;
+                    default:
+                        failed++;
+                        roundFailed++;
                 }
             }
             else {
                 failed++;
+                roundFailed++;
                 process.stderr.write(`Dispatch error: ${s.reason}\n`);
             }
         }
+        void notify({ kind: "round.complete", round, approved: roundApproved, needsChanges: roundNeedsChanges, failed: roundFailed });
     }
     if (round > config.maxRounds)
         reason = "max-rounds";
