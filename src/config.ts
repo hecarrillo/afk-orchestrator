@@ -127,4 +127,14 @@ function loadConfig(): AfkConfig {
   };
 }
 
-export const config: AfkConfig = loadConfig();
+// Lazy: don't crash on `afk --help` or other subcommands that don't need
+// config (like potential future `afk init`). Subcommands that DO need config
+// access it via the `config` proxy, which loads on first property access.
+let _cached: AfkConfig | null = null;
+function ensure(): AfkConfig {
+  if (_cached === null) _cached = loadConfig();
+  return _cached;
+}
+export const config: AfkConfig = new Proxy({} as AfkConfig, {
+  get: (_target, prop: string | symbol) => ensure()[prop as keyof AfkConfig],
+});

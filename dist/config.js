@@ -84,4 +84,15 @@ function loadConfig() {
         configPath: found?.path ?? "(env-only)",
     };
 }
-export const config = loadConfig();
+// Lazy: don't crash on `afk --help` or other subcommands that don't need
+// config (like potential future `afk init`). Subcommands that DO need config
+// access it via the `config` proxy, which loads on first property access.
+let _cached = null;
+function ensure() {
+    if (_cached === null)
+        _cached = loadConfig();
+    return _cached;
+}
+export const config = new Proxy({}, {
+    get: (_target, prop) => ensure()[prop],
+});
