@@ -1,0 +1,11 @@
+{
+  "$comment": "Drop this in your Next.js project root as `afk.config.json`. Adjust `repo` and the `bootstrap.base` path. The `postCreateWorktree` line tells the orchestrator to run `afk bootstrap` after creating each worktree, which symlinks node_modules + .env from the base instead of re-running npm install.",
+  "repo": "hecarrillo/my-nextjs-app",
+  "baseBranch": "main",
+  "concurrency": 3,
+  "postCreateWorktree": "afk bootstrap",
+  "bootstrap": {
+    "base": "$HOME/code/my-nextjs-app",
+    "linkPaths": ["node_modules", ".env", ".env.local"]
+  }
+}

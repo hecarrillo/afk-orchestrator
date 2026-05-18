@@ -1,0 +1,17 @@
+# Build output
+dist/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# macOS
+.DS_Store
+
+# Local config (each consumer project commits its own afk.config.json)
+.afk-state.json
+.afk/events.jsonl
+
+# Editor
+.vscode/
+.idea/

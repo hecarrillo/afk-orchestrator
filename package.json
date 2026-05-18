@@ -1,0 +1,36 @@
+{
+  "name": "@hecarrillo/afk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local AFK agent orchestrator: planner → sandboxed implementer + reviewer → PRs. Per-project ephemeral dashboard. For Next.js + Swift projects.",
+  "type": "module",
+  "bin": {
+    "afk": "./dist/cli.js"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "CONTEXT.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepare": "tsc",
+    "typecheck": "tsc --noEmit",
+    "dev": "tsx src/cli.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "execa": "^9.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/hecarrillo/afk-orchestrator.git"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "$comment": "Drop this in your Swift project root as `afk.config.json`. Swift projects typically don't need the symlink dance, so `postCreateWorktree` runs `swift package resolve` instead (or whatever your project needs). Leave it off entirely if a fresh worktree needs no setup.",
+  "repo": "hecarrillo/my-swift-app",
+  "baseBranch": "main",
+  "concurrency": 2,
+  "postCreateWorktree": "swift package resolve"
+}
