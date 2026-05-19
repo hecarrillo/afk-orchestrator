@@ -130,13 +130,18 @@ export async function listPrFeedback(prNumber) {
     ], { reject: false });
     if (r.exitCode === 0) {
         try {
+            // gh returns `submittedAt` for reviews and `createdAt` for issue-style
+            // comments. We normalise both to `createdAt` on the way out so the
+            // caller can sort by one field. Falls back to epoch-string if neither
+            // is present (defensive — undefined here used to crash the rework loop).
             const data = JSON.parse(r.stdout);
+            const epoch = "1970-01-01T00:00:00Z";
             for (const rev of data.reviews ?? []) {
                 if (rev.body && rev.body.trim().length > 0) {
                     out.push({
                         author: rev.author?.login ?? "(unknown)",
                         body: rev.body,
-                        createdAt: rev.createdAt,
+                        createdAt: rev.submittedAt ?? rev.createdAt ?? epoch,
                         kind: "review",
                         state: rev.state,
                     });
@@ -146,7 +151,7 @@ export async function listPrFeedback(prNumber) {
                 out.push({
                     author: c.author?.login ?? "(unknown)",
                     body: c.body,
-                    createdAt: c.createdAt,
+                    createdAt: c.createdAt ?? epoch,
                     kind: "issue-comment",
                 });
             }
@@ -166,7 +171,7 @@ export async function listPrFeedback(prNumber) {
                 out.push({
                     author: c.user?.login ?? "(unknown)",
                     body: c.body,
-                    createdAt: c.created_at,
+                    createdAt: c.created_at ?? "1970-01-01T00:00:00Z",
                     kind: "review-comment",
                     path: c.path,
                     line: c.line,
@@ -177,7 +182,10 @@ export async function listPrFeedback(prNumber) {
             /* ignore */
         }
     }
-    return out.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    // Defensive sort: any entry without a parseable createdAt sorts oldest-first.
+    // Previously a missing field threw on `.localeCompare(undefined)` and broke
+    // the entire rework loop silently.
+    return out.sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""));
 }
 // Read the attempt count off an issue. Convention: a label `afk-attempts-N`.
 // Returns 0 if no attempts label is present.
