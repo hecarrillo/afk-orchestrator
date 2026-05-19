@@ -246,7 +246,6 @@ The dashboard groups issues by their parent PRD. Detection rules, parsed from ea
 v0.1 — initial port from r2m's in-tree `tools/afk/`. Following pieces are stubs and will land in follow-up issues:
 
 - [ ] `afk dashboard` — Mermaid DAG + polling server (stubbed)
-- [ ] Telegram subscriber implementation (stubbed; `afk telegram-test` confirms config)
 - [ ] Event bus + structured logging
 - [ ] `npm install` `prepare` step build verification on consumer install
 
@@ -257,5 +256,34 @@ Working today:
 - [x] `afk qa` walks PRs with auto-rendered brief
 - [x] `afk status` snapshot
 - [x] `afk brief` issue + PR + reviewer context
-- [x] `afk bootstrap` for Next.js worktree setup (port of `conductor-bootstrap`)
+- [x] `afk bootstrap` for Next.js worktree setup, with auto-detection of the base repo from worktree git metadata
+- [x] Telegram milestone subscriber with `AFK_TELEGRAM_CHAT_ID` env-var fallback
 - [x] `afk reset` emergency cleanup
+
+## Smoke-testing from a fresh machine
+
+To verify a fresh developer can install and use AFK without editing any committed file:
+
+```sh
+# 1. Install globally from the public GitHub repo (no clone needed).
+#    --install-links is required on npm 11+; see the Install section above.
+npm install -g --install-links github:hecarrillo/afk-orchestrator
+afk --help
+
+# 2. In your target project, commit `afk.config.json` with the team-shareable
+#    shape from examples/afk.config.nextjs.json. Do NOT include
+#    `bootstrap.base` or `notifications.telegram.chatId`.
+
+# 3. In your shell rc, set your own Telegram credentials (optional):
+export AFK_TELEGRAM_BOT_TOKEN="<your bot token>"
+export AFK_TELEGRAM_CHAT_ID="<your chat id>"
+
+# 4. Verify each piece:
+cd ~/path/to/project
+afk plan                # dry-run; should print a planning summary
+afk telegram-test       # arrives in YOUR chat (or no-op without env vars)
+git worktree add ../tmp-wt && cd ../tmp-wt
+afk bootstrap           # auto-detects base; reports `base: <path> (auto-detected)`
+```
+
+If `afk bootstrap` reports `base: <path> (auto-detected)`, the per-developer install is wired up correctly. Clean up the test worktree with `cd .. && git worktree remove ../tmp-wt` when finished.
