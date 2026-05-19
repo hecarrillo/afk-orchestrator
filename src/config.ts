@@ -40,7 +40,7 @@ export interface AfkConfig {
   ghBin: string;
   postCreateWorktree?: string;
   bootstrap?: {
-    base: string;
+    base?: string;
     linkPaths: string[];
   };
   notifications?: {
