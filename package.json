@@ -16,7 +16,7 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "dev": "tsx src/cli.ts",
-    "test": "tsx --test tests/**/*.test.ts"
+    "test": "tsx --test 'tests/*.test.ts' 'tests/**/*.test.ts'"
   },
   "engines": {
     "node": ">=20"
