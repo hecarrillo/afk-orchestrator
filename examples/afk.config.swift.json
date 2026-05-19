@@ -1,10 +1,11 @@
 {
-  "$comment": "Drop this in your Swift project root as `afk.config.json` and commit it. NO secrets and NO machine-specific paths: the Telegram chat ID is read from the AFK_TELEGRAM_CHAT_ID env var each dev sets once in their shell rc. Swift projects typically don't need the symlink dance, so `postCreateWorktree` runs `swift package resolve` instead. Leave it off entirely if a fresh worktree needs no setup.",
-  "repo": "hecarrillo/my-swift-app",
+  "$comment": "Drop this in your Swift project root as `afk.config.json` and commit it. Replace `repo` (and `baseBranch` if your default isn't `main`) before committing. NO secrets and NO machine-specific paths: the Telegram chat ID is read from the AFK_TELEGRAM_CHAT_ID env var each dev sets once in their shell rc. Swift projects typically don't need the symlink dance, so `postCreateWorktree` runs `swift package resolve` to materialise dependencies in a fresh worktree. Leave it off entirely if a fresh worktree needs no setup.",
+  "repo": "YOUR-ORG/YOUR-SWIFT-REPO",
   "baseBranch": "main",
   "concurrency": 2,
   "postCreateWorktree": "swift package resolve",
   "notifications": {
+    "$comment": "Empty `telegram: {}` is the opt-in marker: notifications fire when BOTH AFK_TELEGRAM_BOT_TOKEN and AFK_TELEGRAM_CHAT_ID env vars are set in your shell rc, and are silent no-ops otherwise. Do NOT add `chatId` here — it would commit one dev's chat ID into git.",
     "telegram": {}
   }
 }

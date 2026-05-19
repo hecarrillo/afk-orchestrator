@@ -1,6 +1,6 @@
 {
-  "$comment": "Drop this in your Next.js project root as `afk.config.json` and commit it. NO secrets and NO machine-specific paths: `bootstrap.base` is auto-detected from worktree metadata, and the Telegram chat ID is read from the AFK_TELEGRAM_CHAT_ID env var each dev sets once in their shell rc. The `postCreateWorktree` line tells the orchestrator to run `afk bootstrap` after creating each worktree, which symlinks node_modules + .env from the base instead of re-running npm install.",
-  "repo": "hecarrillo/my-nextjs-app",
+  "$comment": "Drop this in your Next.js project root as `afk.config.json` and commit it. Replace `repo` (and `baseBranch` if your default isn't `main`) before committing. NO secrets and NO machine-specific paths: `bootstrap.base` is auto-detected from worktree metadata, and the Telegram chat ID is read from the AFK_TELEGRAM_CHAT_ID env var each dev sets once in their shell rc. The `postCreateWorktree` line tells the orchestrator to run `afk bootstrap` after creating each worktree, which symlinks node_modules + .env from the base instead of re-running npm install.",
+  "repo": "YOUR-ORG/YOUR-NEXTJS-REPO",
   "baseBranch": "main",
   "concurrency": 3,
   "postCreateWorktree": "afk bootstrap",
@@ -8,6 +8,7 @@
     "linkPaths": ["node_modules", ".env", ".env.local"]
   },
   "notifications": {
+    "$comment": "Empty `telegram: {}` is the opt-in marker: notifications fire when BOTH AFK_TELEGRAM_BOT_TOKEN and AFK_TELEGRAM_CHAT_ID env vars are set in your shell rc, and are silent no-ops otherwise. Do NOT add `chatId` here — it would commit one dev's chat ID into git.",
     "telegram": {}
   }
 }
