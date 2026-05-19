@@ -45,7 +45,7 @@ export interface AfkConfig {
   };
   notifications?: {
     telegram?: {
-      chatId: string;
+      chatId?: string;
     };
   };
   dashboard?: {
