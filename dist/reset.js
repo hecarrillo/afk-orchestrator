@@ -3,7 +3,7 @@
 // state for re-dispatch on the next planner round.
 import { join } from "node:path";
 import { removeWorktree } from "./worktree.js";
-import { addLabels, removeLabels } from "./gh.js";
+import { addLabels, removeLabels, clearAttemptCount } from "./gh.js";
 import { afkManagedLabels, labels } from "./labels.js";
 import { config } from "./config.js";
 export async function resetIssue(issueNumber) {
@@ -15,6 +15,7 @@ export async function resetIssue(issueNumber) {
     const path = join(config.worktreesRoot, `issue-${issueNumber}`);
     await removeWorktree({ branch, path });
     await removeLabels(issueNumber, [...afkManagedLabels]).catch(() => { });
+    await clearAttemptCount(issueNumber).catch(() => { });
     await addLabels(issueNumber, [labels.prdReady]).catch(() => { });
-    process.stdout.write(`reset #${issueNumber}: worktree removed, labels reset to ${labels.prdReady}\n`);
+    process.stdout.write(`reset #${issueNumber}: worktree removed, attempts cleared, labels reset to ${labels.prdReady}\n`);
 }

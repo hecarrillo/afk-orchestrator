@@ -4,7 +4,7 @@
 
 import { join } from "node:path";
 import { removeWorktree } from "./worktree.ts";
-import { addLabels, removeLabels } from "./gh.ts";
+import { addLabels, removeLabels, clearAttemptCount } from "./gh.ts";
 import { afkManagedLabels, labels } from "./labels.ts";
 import { config } from "./config.ts";
 
@@ -18,6 +18,7 @@ export async function resetIssue(issueNumber: number): Promise<void> {
   const path = join(config.worktreesRoot, `issue-${issueNumber}`);
   await removeWorktree({ branch, path });
   await removeLabels(issueNumber, [...afkManagedLabels]).catch(() => {});
+  await clearAttemptCount(issueNumber).catch(() => {});
   await addLabels(issueNumber, [labels.prdReady]).catch(() => {});
-  process.stdout.write(`reset #${issueNumber}: worktree removed, labels reset to ${labels.prdReady}\n`);
+  process.stdout.write(`reset #${issueNumber}: worktree removed, attempts cleared, labels reset to ${labels.prdReady}\n`);
 }
