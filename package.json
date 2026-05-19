@@ -1,7 +1,9 @@
 {
   "name": "@hecarrillo/afk",
   "version": "0.1.0",
-  "private": true,
+  "publishConfig": {
+    "access": "restricted"
+  },
   "description": "Local AFK agent orchestrator: planner → sandboxed implementer + reviewer → PRs. Per-project ephemeral dashboard. For Next.js + Swift projects.",
   "type": "module",
   "bin": {
@@ -15,7 +17,8 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "dev": "tsx src/cli.ts"
+    "dev": "tsx src/cli.ts",
+    "test": "tsx --test 'tests/*.test.ts' 'tests/**/*.test.ts'"
   },
   "engines": {
     "node": ">=20"

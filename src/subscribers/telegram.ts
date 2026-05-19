@@ -1,8 +1,10 @@
 // Telegram milestone subscriber. Outbound only — no inbound bot, no daemon.
 //
-// Configured via env (AFK_TELEGRAM_BOT_TOKEN) + afk.config.json
-// (notifications.telegram.chatId). If either is missing every call is a
-// silent no-op so the orchestrator stays usable without notifications.
+// Configured via env (AFK_TELEGRAM_BOT_TOKEN required) + chat ID from either
+// AFK_TELEGRAM_CHAT_ID env var (preferred) or afk.config.json
+// (notifications.telegram.chatId). If the token or chat ID is missing every
+// call is a silent no-op so the orchestrator stays usable without
+// notifications.
 //
 // Sends to https://api.telegram.org/bot<token>/sendMessage with Markdown
 // formatting. Best-effort: if the send fails, we log to stderr and continue.
@@ -10,7 +12,32 @@
 import { config } from "../config.ts";
 
 const TOKEN_ENV = "AFK_TELEGRAM_BOT_TOKEN";
+const CHAT_ID_ENV = "AFK_TELEGRAM_CHAT_ID";
 const API_BASE = "https://api.telegram.org";
+
+/**
+ * Resolve the Telegram chat ID with the documented priority:
+ * 1. `AFK_TELEGRAM_CHAT_ID` env var (per-developer, set in shell rc)
+ * 2. `notifications.telegram.chatId` from afk.config.json (committed default)
+ *
+ * Empty env values are treated as unset so a developer can scrub
+ * `AFK_TELEGRAM_CHAT_ID=` in CI without falling back to config.
+ *
+ * Exported for testability — production callers use the no-arg `chatId()`.
+ */
+export function resolveChatId(
+  src: { envValue: string | undefined; configValue: string | undefined },
+): string | undefined {
+  if (src.envValue && src.envValue.length > 0) return src.envValue;
+  return src.configValue;
+}
+
+function chatId(): string | undefined {
+  return resolveChatId({
+    envValue: process.env[CHAT_ID_ENV],
+    configValue: config.notifications?.telegram?.chatId,
+  });
+}
 
 export type MilestoneEvent =
   | { kind: "dispatch.started"; issueNumber: number; title: string; attempt: number; isRework: boolean }
@@ -24,7 +51,7 @@ export type MilestoneEvent =
   | { kind: "failure"; issueNumber: number; reason: string };
 
 function enabled(): boolean {
-  return Boolean(process.env[TOKEN_ENV]) && Boolean(config.notifications?.telegram?.chatId);
+  return Boolean(process.env[TOKEN_ENV]) && Boolean(chatId());
 }
 
 function repoLabel(): string {
@@ -71,8 +98,8 @@ function format(event: MilestoneEvent): string {
 
 async function postMessage(text: string): Promise<void> {
   const token = process.env[TOKEN_ENV];
-  const chatId = config.notifications?.telegram?.chatId;
-  if (!token || !chatId) return;
+  const id = chatId();
+  if (!token || !id) return;
 
   const url = `${API_BASE}/bot${token}/sendMessage`;
   try {
@@ -80,7 +107,7 @@ async function postMessage(text: string): Promise<void> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        chat_id: chatId,
+        chat_id: id,
         text,
         parse_mode: "Markdown",
         disable_web_page_preview: true,
@@ -110,10 +137,13 @@ export async function test(): Promise<number> {
     );
     return 2;
   }
-  if (!config.notifications?.telegram?.chatId) {
+  const id = chatId();
+  if (!id) {
     process.stderr.write(
-      `no notifications.telegram.chatId in ${config.configPath}.\n` +
-      `Add to afk.config.json:\n` +
+      `no Telegram chat ID configured.\n` +
+      `Set one of:\n` +
+      `  export ${CHAT_ID_ENV}="<your_chat_id>"          # per-developer (recommended)\n` +
+      `  OR add to ${config.configPath}:\n` +
       `  "notifications": { "telegram": { "chatId": "<your_chat_id>" } }\n`,
     );
     return 2;
@@ -125,6 +155,6 @@ export async function test(): Promise<number> {
     `If you see this, your bot token and chat ID are wired up correctly.\n` +
     `_${new Date().toLocaleString()}_`;
   await postMessage(text);
-  process.stdout.write(`sent test message to chat ${config.notifications.telegram.chatId}\n`);
+  process.stdout.write(`sent test message to chat ${id}\n`);
   return 0;
 }
