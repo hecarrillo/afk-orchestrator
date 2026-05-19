@@ -29,7 +29,7 @@ Full domain model: [`CONTEXT.md`](./CONTEXT.md). Architectural decisions: [`docs
 
 ```sh
 cd ~/code/my-nextjs-app
-npm install --save-dev github:hecarrillo/afk-orchestrator
+npm install --save-dev --install-links github:hecarrillo/afk-orchestrator
 ```
 
 Add to `package.json` scripts if you want shortcuts:
@@ -48,27 +48,57 @@ Invoke with `npx afk plan` (or `npm run afk plan`).
 Swift repos shouldn't drag npm into their root. Install once globally:
 
 ```sh
-npm install -g github:hecarrillo/afk-orchestrator
+npm install -g --install-links github:hecarrillo/afk-orchestrator
 ```
+
+> **Note:** `--install-links` is required on npm 11+. Without it, the global install leaves a dangling symlink instead of a real directory. Local per-project installs need it too.
 
 Invoke `afk plan` from any project directory.
 
 ## Configure
 
-Each project gets an `afk.config.json` at its root. Minimal:
+AFK splits configuration into two layers so a team can commit one `afk.config.json` and have every developer pick it up cleanly:
+
+- **`afk.config.json`** (committed) — repo, branch, concurrency, link paths, dashboard. Same for everyone.
+- **Per-developer env vars** (shell rc) — bot tokens, chat IDs, machine-specific overrides. Different per machine.
+
+### Committed `afk.config.json`
+
+Each project gets one `afk.config.json` at its root and commits it. Minimal:
 
 ```json
 {
-  "repo": "hecarrillo/my-nextjs-app",
+  "repo": "YOUR-ORG/YOUR-REPO",
   "baseBranch": "main"
 }
 ```
 
-Full schema (all fields optional except `repo`):
+Team-shareable Next.js shape (matches `examples/afk.config.nextjs.json`):
 
 ```json
 {
-  "repo": "hecarrillo/my-nextjs-app",
+  "repo": "YOUR-ORG/YOUR-REPO",
+  "baseBranch": "main",
+  "concurrency": 3,
+  "postCreateWorktree": "afk bootstrap",
+  "bootstrap": {
+    "linkPaths": ["node_modules", ".env", ".env.local"]
+  },
+  "notifications": {
+    "telegram": {}
+  }
+}
+```
+
+Notes:
+- `bootstrap.base` is **optional**. When omitted, `afk bootstrap` auto-detects the base repo from the current worktree's git metadata (`git rev-parse --git-common-dir`'s parent). Set `base` explicitly only if you keep your canonical checkout at a path no `git worktree` walk would find.
+- `notifications.telegram: {}` marks Telegram as opt-in: notifications fire iff each developer has both `AFK_TELEGRAM_BOT_TOKEN` and `AFK_TELEGRAM_CHAT_ID` set. No chat ID belongs in the committed file.
+
+Full schema with explicit defaults:
+
+```json
+{
+  "repo": "YOUR-ORG/YOUR-REPO",
   "baseBranch": "main",
   "concurrency": 3,
   "maxRounds": 5,
@@ -78,7 +108,7 @@ Full schema (all fields optional except `repo`):
 
   "postCreateWorktree": "afk bootstrap",
   "bootstrap": {
-    "base": "$HOME/code/my-nextjs-app",
+    "base": "$HOME/code/your-repo",
     "linkPaths": ["node_modules", ".env", ".env.local"]
   },
 
@@ -93,49 +123,71 @@ Full schema (all fields optional except `repo`):
 }
 ```
 
-Secrets stay in env vars:
-- `AFK_TELEGRAM_BOT_TOKEN` — required to enable Telegram notifications
-- `AFK_REPO` — overrides `repo` (useful for one-off runs against a different repo)
-- All other env overrides documented in [`src/config.ts`](./src/config.ts)
+### Per-developer setup (env vars)
+
+Each developer sets these once per machine, typically in `~/.zshrc` or `~/.bashrc`:
+
+```sh
+export AFK_TELEGRAM_BOT_TOKEN="123456789:ABC-def-GHI..."   # bot token from @BotFather
+export AFK_TELEGRAM_CHAT_ID="987654321"                    # YOUR chat ID, not a teammate's
+```
+
+Other env vars that override committed config (documented in [`src/config.ts`](./src/config.ts)):
+- `AFK_REPO` — overrides `repo` (useful for one-off runs)
+- `AFK_BASE_BRANCH`, `AFK_CONCURRENCY`, `AFK_MAX_ROUNDS`, `AFK_MAX_ATTEMPTS`
+- `AFK_IMPL_TIMEOUT_MS`, `AFK_REVIEW_TIMEOUT_MS`, `AFK_MAX_WALLCLOCK_MS`
+- `AFK_CLAUDE_BIN`, `AFK_GH_BIN`
+
+If both env var and committed config provide a value, env var wins.
 
 ## Telegram setup
 
-Outbound milestone notifications (dispatch start, implementer done, reviewer verdict, PR opened/updated, round complete, failures, cap-hits).
+Outbound milestone notifications (dispatch start, implementer done, reviewer verdict, PR opened/updated, round complete, failures, cap-hits). All sends are silent no-ops when either env var is missing — the orchestrator stays usable without Telegram.
 
 **1. Create the bot.** In Telegram, message `@BotFather`:
+
 ```
 /newbot
 <a name, e.g. "Hector AFK">
 <a username ending in "bot", e.g. "hector_afk_bot">
 ```
+
 BotFather replies with a token like `123456789:ABC-def-GHI...`. Keep it private.
 
-**2. Get your chat ID.** Send any message to your new bot. Then:
+**2. Get your chat ID.** Send any message to your new bot, then:
+
 ```sh
 curl -s "https://api.telegram.org/bot<TOKEN>/getUpdates" | jq '.result[0].message.chat.id'
 ```
+
 Returns a number like `987654321`.
 
-**3. Wire it up.** In `~/.zshrc`:
+**3. Wire it up — per developer, in `~/.zshrc`:**
+
 ```sh
 export AFK_TELEGRAM_BOT_TOKEN="123456789:ABC-def-GHI..."
+export AFK_TELEGRAM_CHAT_ID="987654321"
 ```
 
-In your project's `afk.config.json`:
+**4. Enable in the committed `afk.config.json`** by adding the marker:
+
 ```json
 {
   "notifications": {
-    "telegram": { "chatId": "987654321" }
+    "telegram": {}
   }
 }
 ```
 
-**4. Verify.**
+This empty block tells the orchestrator "Telegram is opt-in here — send if the env vars are set, otherwise no-op". A `chatId` field in the committed config is supported as a fallback but discouraged for shared repos (one teammate ends up receiving everyone's pings).
+
+**5. Verify:**
+
 ```sh
 afk telegram-test
 ```
 
-If either the env var or `chatId` is missing, all sends are silent no-ops — the orchestrator stays usable without Telegram. Errors talking to Telegram print to stderr but never fail a dispatch.
+Errors talking to Telegram print to stderr but never fail a dispatch.
 
 ## Commands
 
