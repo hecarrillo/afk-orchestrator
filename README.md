@@ -25,6 +25,8 @@ Full domain model: [`CONTEXT.md`](./CONTEXT.md). Architectural decisions: [`docs
 
 ## Install
 
+> **Note:** Both install commands below require `--install-links` on npm 11+. Without it, the install leaves a dangling symlink instead of a real directory (the package contents end up cleaned up post-install).
+
 ### Next.js project (per-project)
 
 ```sh
@@ -50,8 +52,6 @@ Swift repos shouldn't drag npm into their root. Install once globally:
 ```sh
 npm install -g --install-links github:hecarrillo/afk-orchestrator
 ```
-
-> **Note:** `--install-links` is required on npm 11+. Without it, the global install leaves a dangling symlink instead of a real directory. Local per-project installs need it too.
 
 Invoke `afk plan` from any project directory.
 
@@ -113,7 +113,7 @@ Full schema with explicit defaults:
   },
 
   "notifications": {
-    "telegram": { "chatId": "123456789" }
+    "telegram": { "chatId": "987654321" }
   },
 
   "dashboard": {
@@ -122,6 +122,8 @@ Full schema with explicit defaults:
   }
 }
 ```
+
+> **Note:** The full schema above shows `notifications.telegram.chatId` as an example, but committing a real chat ID is discouraged for shared repos (one teammate ends up receiving everyone's pings). Use the empty `"telegram": {}` marker shape from the team-shareable example above and let each developer set `AFK_TELEGRAM_CHAT_ID` in their shell rc.
 
 ### Per-developer setup (env vars)
 
