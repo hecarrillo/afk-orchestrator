@@ -18,8 +18,7 @@
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "dev": "tsx src/cli.ts",
-    "test": "tsx --test 'tests/*.test.ts' 'tests/**/*.test.ts'",
-    "prepare": "node -e \"require('fs').existsSync('dist/cli.js') || require('child_process').execSync('tsc', {stdio:'inherit'})\""
+    "test": "tsx --test 'tests/*.test.ts' 'tests/**/*.test.ts'"
   },
   "engines": {
     "node": ">=20"
