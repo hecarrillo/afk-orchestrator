@@ -1,11 +1,13 @@
 {
-  "$comment": "Drop this in your Next.js project root as `afk.config.json`. Adjust `repo` and the `bootstrap.base` path. The `postCreateWorktree` line tells the orchestrator to run `afk bootstrap` after creating each worktree, which symlinks node_modules + .env from the base instead of re-running npm install.",
+  "$comment": "Drop this in your Next.js project root as `afk.config.json` and commit it. NO secrets and NO machine-specific paths: `bootstrap.base` is auto-detected from worktree metadata, and the Telegram chat ID is read from the AFK_TELEGRAM_CHAT_ID env var each dev sets once in their shell rc. The `postCreateWorktree` line tells the orchestrator to run `afk bootstrap` after creating each worktree, which symlinks node_modules + .env from the base instead of re-running npm install.",
   "repo": "hecarrillo/my-nextjs-app",
   "baseBranch": "main",
   "concurrency": 3,
   "postCreateWorktree": "afk bootstrap",
   "bootstrap": {
-    "base": "$HOME/code/my-nextjs-app",
     "linkPaths": ["node_modules", ".env", ".env.local"]
+  },
+  "notifications": {
+    "telegram": {}
   }
 }
