@@ -19,7 +19,10 @@
 //   ghBin               = "gh"
 //   postCreateWorktree  — shell command to run after `git worktree add`
 //   bootstrap           — see `afk bootstrap` for the schema
-//   notifications.telegram — { chatId } when AFK_TELEGRAM_BOT_TOKEN is set
+//   notifications.telegram — { chatId? } enables Telegram when both
+//                              AFK_TELEGRAM_BOT_TOKEN and a chat ID are set
+//                              (chat ID resolves from AFK_TELEGRAM_CHAT_ID env
+//                              var first, else this field)
 //   dashboard           — { port?: number, host?: string }
 import { readFileSync, existsSync } from "node:fs";
 import { dirname, resolve, join, basename } from "node:path";
