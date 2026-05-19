@@ -1,8 +1,10 @@
 // Telegram milestone subscriber. Outbound only — no inbound bot, no daemon.
 //
-// Configured via env (AFK_TELEGRAM_BOT_TOKEN) + afk.config.json
-// (notifications.telegram.chatId). If either is missing every call is a
-// silent no-op so the orchestrator stays usable without notifications.
+// Configured via env (AFK_TELEGRAM_BOT_TOKEN required) + chat ID from either
+// AFK_TELEGRAM_CHAT_ID env var (preferred) or afk.config.json
+// (notifications.telegram.chatId). If the token or chat ID is missing every
+// call is a silent no-op so the orchestrator stays usable without
+// notifications.
 //
 // Sends to https://api.telegram.org/bot<token>/sendMessage with Markdown
 // formatting. Best-effort: if the send fails, we log to stderr and continue.
@@ -118,7 +120,7 @@ export async function test() {
         process.stderr.write(`no Telegram chat ID configured.\n` +
             `Set one of:\n` +
             `  export ${CHAT_ID_ENV}="<your_chat_id>"          # per-developer (recommended)\n` +
-            `  // OR in ${config.configPath}:\n` +
+            `  OR add to ${config.configPath}:\n` +
             `  "notifications": { "telegram": { "chatId": "<your_chat_id>" } }\n`);
         return 2;
     }
