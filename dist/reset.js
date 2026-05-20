@@ -1,6 +1,9 @@
-// `afk reset --issue N` — emergency cleanup. Removes a stale worktree and
-// strips AFK-managed labels from the issue, leaving it in `ready-for-agent`
-// state for re-dispatch on the next planner round.
+// `afk reset --issue N` — emergency cleanup. Removes a stale worktree, strips
+// AFK-managed labels AND attempt counters from the issue, and leaves it in
+// `ready-for-agent` state for re-dispatch on the next planner round. Clearing
+// `afk-attempts-N` matters when reset is invoked after a partial-progress
+// dispatch — otherwise the issue could hit the attempt cap on its very next
+// retry even though we're explicitly starting it over.
 import { join } from "node:path";
 import { removeWorktree } from "./worktree.js";
 import { addLabels, removeLabels, clearAttemptCount } from "./gh.js";
