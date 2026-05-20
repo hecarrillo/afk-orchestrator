@@ -65,6 +65,40 @@ export async function createPullRequest(opts) {
     ]);
     return url.trim();
 }
+export async function getPrMergeable(prNumber) {
+    const out = await gh([
+        "pr", "view", String(prNumber),
+        "--repo", config.repo,
+        "--json", "mergeable",
+        "--jq", ".mergeable",
+    ]);
+    return normalizeMergeable(out);
+}
+/**
+ * GitHub doesn't compute mergeability synchronously — a freshly-pushed PR
+ * reports `UNKNOWN` for a few seconds while the background job runs. Poll
+ * with light backoff and return the first definite answer. If it never
+ * resolves before `timeoutMs`, return `UNKNOWN` and let the caller decide.
+ */
+export async function waitForMergeableResolution(prNumber, timeoutMs = 30_000) {
+    const deadline = Date.now() + timeoutMs;
+    let attempt = 0;
+    while (Date.now() < deadline) {
+        const m = await getPrMergeable(prNumber).catch(() => "UNKNOWN");
+        if (m !== "UNKNOWN")
+            return m;
+        const wait = Math.min(2000 + attempt * 1000, 5000);
+        await new Promise((r) => setTimeout(r, wait));
+        attempt++;
+    }
+    return "UNKNOWN";
+}
+export function normalizeMergeable(raw) {
+    const v = raw.trim().toUpperCase();
+    if (v === "MERGEABLE" || v === "CONFLICTING" || v === "UNKNOWN")
+        return v;
+    return "UNKNOWN";
+}
 export async function reviewPullRequest(opts) {
     const flag = opts.verdict === "approve" ? "--approve" :
         opts.verdict === "request-changes" ? "--request-changes" :
