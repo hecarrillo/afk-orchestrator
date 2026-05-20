@@ -16,7 +16,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { addLabels, removeLabels, createPullRequest, reviewPullRequest, commentOnIssue, findOpenPrForBranch, listPrFeedback, bumpAttemptCount, } from "./gh.js";
 import { labels } from "./labels.js";
-import { createOrAdoptWorktree, pushBranch, commitCount, diffStats, } from "./worktree.js";
+import { createOrAdoptWorktree, removeWorktree, pushBranch, commitCount, diffStats, } from "./worktree.js";
 import { runClaude } from "./claude.js";
 import { implementerPrompt, reviewerPrompt } from "./prompts.js";
 import { config } from "./config.js";
@@ -145,6 +145,10 @@ export async function dispatch(issue) {
         if (parsed.verdict === "approve") {
             await transitionToNeedsHumanQa(issue, prUrl);
             void notify({ kind: "outcome", issueNumber: issue.number, outcomeKind: "approved", prUrl });
+            // Successful dispatch — drop the local worktree. The remote branch
+            // carries the canonical history; on rework, createOrAdoptWorktree
+            // fetches a fresh checkout from origin anyway.
+            await removeWorktree(worktree).catch(() => { });
             return {
                 issue, worktree,
                 outcome: { kind: "approved", prUrl, reviewerReport: parsed.body, commits, attempt, isRework },
@@ -159,6 +163,9 @@ export async function dispatch(issue) {
             await addLabels(issue.number, [labels.needsChanges]);
             await commentOnIssue(issue.number, `Auto-reviewer requested changes on attempt ${attempt}: ${prUrl}\n\nPlanner will re-dispatch on next round with prior comments inlined.`);
             void notify({ kind: "outcome", issueNumber: issue.number, outcomeKind: "needs-changes", prUrl });
+            // Rework will re-fetch the branch fresh from origin; the local
+            // working tree has no information rework needs.
+            await removeWorktree(worktree).catch(() => { });
             return {
                 issue, worktree,
                 outcome: { kind: "needs-changes", prUrl, reviewerReport: parsed.body, commits, attempt, isRework },
