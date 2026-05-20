@@ -8,11 +8,22 @@
 // the next one. Simpler to reason about than continuous dispatch, and the
 // concurrency cap is enforced naturally by the planner returning at most
 // `concurrencySlots` items per round.
+//
+// At startup, the loop checks for `afk-in-progress` issues whose updatedAt
+// is older than the dispatcher's maximum possible runtime — these are
+// zombies from a prior process that was killed mid-dispatch (laptop slept,
+// terminal closed, OS OOM, etc.). The label sticks forever and would block
+// the queue every round. We demote them to `afk-needs-changes` so the next
+// planner pass picks them up as rework against their existing remote branch.
 
 import { plan } from "./planner.ts";
 import { dispatch, type DispatchResult } from "./dispatcher.ts";
 import { config } from "./config.ts";
 import { send as notify } from "./subscribers/telegram.ts";
+import { listOpenIssuesByLabel, addLabels, removeLabels, commentOnIssue, type Issue } from "./gh.ts";
+import { labels } from "./labels.ts";
+
+const ZOMBIE_BUFFER_MS = 5 * 60 * 1000; // grace period beyond the worst-case dispatch runtime
 
 export interface LoopSummary {
   rounds: number;
@@ -30,6 +41,8 @@ export async function loop(): Promise<LoopSummary> {
   let approved = 0, needsChanges = 0, failed = 0;
   let reason: LoopSummary["reason"] = "empty-queue";
   let round = 0;
+
+  await recoverZombies();
 
   for (round = 1; round <= config.maxRounds; round++) {
     if (Date.now() - start > config.maxWallClockMs) {
@@ -79,6 +92,53 @@ export async function loop(): Promise<LoopSummary> {
     reason,
     results,
   };
+}
+
+/**
+ * The maximum wall-clock time a healthy dispatch can occupy — implementer +
+ * reviewer plus a small buffer. Anything older than this in `afk-in-progress`
+ * is by definition a zombie.
+ */
+export function zombieThresholdMs(): number {
+  return config.implementerTimeoutMs + config.reviewerTimeoutMs + ZOMBIE_BUFFER_MS;
+}
+
+/**
+ * Pure predicate so callers can unit-test the policy without touching gh.
+ * Returns true when `updatedAt` is older than `thresholdMs` relative to `now`.
+ */
+export function isZombie(updatedAt: string, now: number, thresholdMs: number): boolean {
+  const ts = Date.parse(updatedAt);
+  if (Number.isNaN(ts)) return false; // unparseable timestamp — don't auto-touch
+  return now - ts > thresholdMs;
+}
+
+async function recoverZombies(): Promise<void> {
+  let inProgress: Issue[];
+  try {
+    inProgress = await listOpenIssuesByLabel(labels.inProgress);
+  } catch (err) {
+    process.stderr.write(`[loop] zombie check skipped — couldn't list in-progress issues: ${err instanceof Error ? err.message : String(err)}\n`);
+    return;
+  }
+  if (inProgress.length === 0) return;
+
+  const now = Date.now();
+  const threshold = zombieThresholdMs();
+  const zombies = inProgress.filter(i => isZombie(i.updatedAt, now, threshold));
+  if (zombies.length === 0) return;
+
+  const ageMin = (i: Issue) => Math.round((now - Date.parse(i.updatedAt)) / 60000);
+  process.stdout.write(`\n⚠️  recovering ${zombies.length} zombie in-flight issue(s) (in-progress > ${Math.round(threshold / 60000)}m):\n`);
+  for (const z of zombies) {
+    process.stdout.write(`  ${z.number} — last updated ${ageMin(z)}m ago: ${z.title}\n`);
+    await removeLabels(z.number, [labels.inProgress, labels.needsReview]).catch(() => {});
+    await addLabels(z.number, [labels.needsChanges]).catch(() => {});
+    await commentOnIssue(
+      z.number,
+      `🧟 Zombie recovery: this issue was stuck in \`afk-in-progress\` for ${ageMin(z)} minutes — past the dispatcher's worst-case runtime, so the prior orchestrator was killed mid-dispatch. Resetting to \`afk-needs-changes\` so the next planner round picks it up as rework against the existing remote branch.`,
+    ).catch(() => {});
+  }
 }
 
 function logPlan(p: Awaited<ReturnType<typeof plan>>, round: number): void {

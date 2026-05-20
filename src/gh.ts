@@ -12,6 +12,7 @@ export interface Issue {
   state: "OPEN" | "CLOSED";
   labels: { name: string }[];
   url: string;
+  updatedAt: string;
 }
 
 export interface PrComment {
@@ -45,7 +46,7 @@ export async function listOpenIssuesByLabel(label: string): Promise<Issue[]> {
     "--label", label,
     "--state", "open",
     "--limit", "200",
-    "--json", "number,title,body,state,labels,url",
+    "--json", "number,title,body,state,labels,url,updatedAt",
   ]);
   return JSON.parse(out) as Issue[];
 }
@@ -54,7 +55,7 @@ export async function getIssue(number: number): Promise<Issue> {
   const out = await gh([
     "issue", "view", String(number),
     "--repo", config.repo,
-    "--json", "number,title,body,state,labels,url",
+    "--json", "number,title,body,state,labels,url,updatedAt",
   ]);
   return JSON.parse(out) as Issue;
 }

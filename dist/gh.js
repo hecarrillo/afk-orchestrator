@@ -17,7 +17,7 @@ export async function listOpenIssuesByLabel(label) {
         "--label", label,
         "--state", "open",
         "--limit", "200",
-        "--json", "number,title,body,state,labels,url",
+        "--json", "number,title,body,state,labels,url,updatedAt",
     ]);
     return JSON.parse(out);
 }
@@ -25,7 +25,7 @@ export async function getIssue(number) {
     const out = await gh([
         "issue", "view", String(number),
         "--repo", config.repo,
-        "--json", "number,title,body,state,labels,url",
+        "--json", "number,title,body,state,labels,url,updatedAt",
     ]);
     return JSON.parse(out);
 }
