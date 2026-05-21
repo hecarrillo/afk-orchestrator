@@ -18,11 +18,12 @@ import { join } from "node:path";
 import {
   type Issue,
   addLabels, removeLabels, createPullRequest, reviewPullRequest, commentOnIssue,
-  findOpenPrForBranch, listPrFeedback, bumpAttemptCount,
+  findOpenPrForBranch, listPrFeedback, bumpAttemptCount, waitForMergeableResolution,
 } from "./gh.ts";
 import { labels } from "./labels.ts";
 import {
   createOrAdoptWorktree, removeWorktree, pushBranch, commitCount, diffStats,
+  mergeBaseIntoWorktree,
   type Worktree,
 } from "./worktree.ts";
 import { runClaude } from "./claude.ts";
@@ -33,6 +34,7 @@ import { send as notify } from "./subscribers/telegram.ts";
 export type DispatchOutcome =
   | { kind: "approved"; prUrl: string; reviewerReport: string; commits: number; attempt: number; isRework: boolean }
   | { kind: "needs-changes"; prUrl: string; reviewerReport: string; commits: number; attempt: number; isRework: boolean }
+  | { kind: "merge-conflict"; conflictedFiles: string[]; attempt: number; isRework: boolean; prUrl?: string }
   | { kind: "implementer-blocked"; blockerReport: string; attempt: number }
   | { kind: "implementer-no-commits"; attempt: number; isRework: boolean }
   | { kind: "implementer-failed"; exitCode: number; stderr: string; attempt: number }
@@ -111,6 +113,62 @@ export async function dispatch(issue: Issue): Promise<DispatchResult> {
     log(issue, `implementer made ${commits} commit(s)`);
     void notify({ kind: "implementer.finished", issueNumber: issue.number, commits, elapsedMs: impl.elapsedMs });
 
+    // ── sync with base ─────────────────────────────────────────────────────
+    // Merge the latest `origin/<baseBranch>` into the branch BEFORE the
+    // reviewer runs and BEFORE the PR is pushed. If the merge conflicts,
+    // requeue immediately — the reviewer would have nothing useful to say
+    // about a conflicting tree, and we never want to ask a human to QA a
+    // PR that GitHub will refuse to merge. The implementer gets another
+    // shot on the next planner round, this time with the conflict files
+    // and base SHA inlined in its prompt (rework path picks them up via
+    // priorFeedback automatically).
+    log(issue, `syncing with origin/${config.baseBranch}`);
+    const mergeOutcome = await mergeBaseIntoWorktree(worktree);
+    if (mergeOutcome.kind === "conflict") {
+      const list = mergeOutcome.conflictedFiles.length > 0
+        ? mergeOutcome.conflictedFiles.map((f) => `- \`${f}\``).join("\n")
+        : "(git did not report individual file paths)";
+      const summary =
+        `Auto-merge of \`origin/${config.baseBranch}\` into \`${worktree.branch}\` conflicted; requeueing for rework.\n\n` +
+        `Conflicted paths:\n${list}\n\n` +
+        `The branch was reset to its pre-merge HEAD. The implementer will see this comment as prior feedback on the next planner round and should re-resolve the integration in its own commits.`;
+      log(issue, `merge conflict on ${mergeOutcome.conflictedFiles.length} file(s) — requeueing`);
+      // Push the branch FIRST so a PR exists and the comment thread is the
+      // canonical conversation surface. If push fails (e.g. branch protection
+      // disallows non-fast-forward), fall back to commenting on the issue.
+      let prUrlForComment: string | undefined;
+      const pushAttempt = await pushBranch(worktree).then(() => true).catch(() => false);
+      if (pushAttempt) {
+        let prRef = existingPr ?? await findOpenPrForBranch(worktree.branch).catch(() => null);
+        if (!prRef) {
+          const created = await createPullRequest({
+            title: `${truncate(issue.title, 70)} (closes #${issue.number})`,
+            body: `Resolves #${issue.number}.\n\n**Conflict-pending** — automerge with \`${config.baseBranch}\` failed; awaiting implementer rework.\n\n🤖 Opened by AFK orchestrator.`,
+            head: worktree.branch,
+          }).catch(() => null);
+          if (created) {
+            prRef = { number: parsePrNumber(created) ?? 0, url: created, state: "OPEN" };
+          }
+        }
+        if (prRef) {
+          prUrlForComment = prRef.url;
+          await reviewPullRequest({ prNumber: prRef.number, verdict: "comment", body: summary }).catch(() => {});
+        }
+      }
+      return await requeueAsNeedsChanges(issue, worktree, attempt, start, {
+        kind: "merge-conflict",
+        conflictedFiles: mergeOutcome.conflictedFiles,
+        attempt,
+        isRework,
+        prUrl: prUrlForComment,
+      }, prUrlForComment ? `Merge conflict on ${mergeOutcome.conflictedFiles.length} file(s); see ${prUrlForComment}` : summary);
+    }
+    if (mergeOutcome.kind === "merged") {
+      log(issue, `merged origin/${config.baseBranch} into ${worktree.branch}`);
+    } else {
+      log(issue, `base is up-to-date — no merge needed`);
+    }
+
     // ── reviewer ───────────────────────────────────────────────────────────
     await transitionToNeedsReview(issue);
     const stats = await diffStats(worktree);
@@ -179,6 +237,29 @@ export async function dispatch(issue: Issue): Promise<DispatchResult> {
       process.stderr.write(`[dispatch ${issue.number}] WARN: could not post PR review (${err instanceof Error ? err.message : String(err)}); report is in the PR body.\n`);
     });
 
+    // ── post-push mergeability check ──────────────────────────────────────
+    // We merged the latest base in before the reviewer, so this *should* be
+    // MERGEABLE. The window for CONFLICTING is the few seconds between our
+    // in-worktree merge and the push — if a teammate landed a conflicting
+    // commit on `main` in that gap, GitHub will flag the PR. Override the
+    // reviewer's verdict in that case and requeue — never invite the human
+    // to QA a conflicting PR.
+    const mergeable = await waitForMergeableResolution(prNumber).catch(() => "UNKNOWN" as const);
+    if (mergeable === "CONFLICTING") {
+      log(issue, `PR #${prNumber} flagged CONFLICTING by GitHub after push — requeueing`);
+      const summary =
+        `GitHub flagged this PR as conflicting after push (race vs. \`${config.baseBranch}\`); requeueing for rework. ` +
+        `The next attempt will re-merge \`origin/${config.baseBranch}\` and try again.`;
+      await reviewPullRequest({ prNumber, verdict: "comment", body: summary }).catch(() => {});
+      return await requeueAsNeedsChanges(issue, worktree, attempt, start, {
+        kind: "merge-conflict",
+        conflictedFiles: [],
+        attempt,
+        isRework,
+        prUrl,
+      }, `PR #${prNumber} CONFLICTING — see ${prUrl}`);
+    }
+
     // ── label transition ──────────────────────────────────────────────────
     if (parsed.verdict === "approve") {
       await transitionToNeedsHumanQa(issue, prUrl);
@@ -226,6 +307,29 @@ async function terminateAsFailed(
 ): Promise<DispatchResult> {
   await transitionToNeedsChangesGenerically(issue, message);
   void notify({ kind: "failure", issueNumber: issue.number, reason: message.split("\n")[0] ?? "unknown" });
+  return { issue, worktree, outcome, elapsedMs: Date.now() - start };
+}
+
+/**
+ * Terminate as a recoverable rework — used when something detectable went
+ * wrong but the implementer should get another shot (e.g. a base-branch
+ * merge conflict). Differs from `terminateAsFailed` in two ways: the issue
+ * comment is the verbatim summary (already written for human readers, not
+ * a stack trace), and the worktree is removed because rework will re-fetch
+ * from origin anyway. The notify event is `outcome: needs-changes` so the
+ * round summary stays accurate.
+ */
+async function requeueAsNeedsChanges(
+  issue: Issue,
+  worktree: Worktree,
+  _attempt: number,
+  start: number,
+  outcome: DispatchOutcome,
+  summary: string,
+): Promise<DispatchResult> {
+  await transitionToNeedsChangesGenerically(issue, summary);
+  void notify({ kind: "outcome", issueNumber: issue.number, outcomeKind: "needs-changes" });
+  await removeWorktree(worktree).catch(() => {});
   return { issue, worktree, outcome, elapsedMs: Date.now() - start };
 }
 

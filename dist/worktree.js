@@ -37,7 +37,11 @@ export async function createOrAdoptWorktree(issueNumber) {
     }
     // Prune dangling worktree refs in .git/worktrees/
     await execa("git", ["-C", config.repoRoot, "worktree", "prune"], { reject: false });
-    // 2. Check if the branch exists on origin (rework path).
+    // 2. Refresh origin's view of both the base branch (so the fresh-create
+    //    path branches from the *current* head of main, not a week-old local
+    //    cache) and the issue branch (so the rework path adopts the latest
+    //    remote commits, including anything the human added during QA).
+    await execa("git", ["-C", config.repoRoot, "fetch", "origin", config.baseBranch], { reject: false });
     await execa("git", ["-C", config.repoRoot, "fetch", "origin", branch], { reject: false });
     const remoteRef = `refs/remotes/origin/${branch}`;
     const remoteExists = await execa("git", ["-C", config.repoRoot, "rev-parse", "--verify", remoteRef], { reject: false });
@@ -83,6 +87,42 @@ export async function diffStats(wt) {
     const baseRef = await currentBaseRef();
     const { stdout } = await execa("git", ["-C", wt.path, "diff", "--stat", baseRef]);
     return stdout;
+}
+/**
+ * Merge the latest `origin/<baseBranch>` into the worktree's branch so the
+ * pre-review state mirrors what the eventual PR will look like on GitHub. If
+ * the merge conflicts, abort it (leaving the branch at its pre-merge HEAD)
+ * and return the list of conflicted paths so the dispatcher can requeue
+ * without ever asking the human to review a conflicting PR.
+ *
+ * Always fetches `origin/<baseBranch>` first — if `currentBaseRef()` falls
+ * back to a local ref (no `origin/` available), this still merges that local
+ * ref, which is the best we can do without a remote.
+ */
+export async function mergeBaseIntoWorktree(wt) {
+    await execa("git", ["-C", wt.path, "fetch", "origin", config.baseBranch], { reject: false });
+    const baseRef = await currentBaseRef();
+    // Skip the merge entirely if the branch already contains every commit on base.
+    const ahead = await execa("git", ["-C", wt.path, "rev-list", "--count", `HEAD..${baseRef}`], { reject: false });
+    if (ahead.exitCode === 0 && Number(ahead.stdout.trim()) === 0) {
+        return { kind: "up-to-date" };
+    }
+    const baseShaProbe = await execa("git", ["-C", wt.path, "rev-parse", baseRef], { reject: false });
+    const baseSha = baseShaProbe.stdout.trim();
+    const merge = await execa("git", ["-C", wt.path, "merge", "--no-edit", "--no-ff", baseRef], { reject: false, env: { ...process.env, GIT_EDITOR: "true" } });
+    if (merge.exitCode === 0) {
+        return { kind: "merged", baseSha };
+    }
+    // Conflict — collect the unmerged paths, then abort so the branch returns
+    // to its pre-merge state. The implementer can pick up the rework on the
+    // next round with a clean tree and the conflict summary in the prompt.
+    const unmerged = await execa("git", ["-C", wt.path, "diff", "--name-only", "--diff-filter=U"], { reject: false });
+    const conflictedFiles = unmerged.stdout
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean);
+    await execa("git", ["-C", wt.path, "merge", "--abort"], { reject: false });
+    return { kind: "conflict", conflictedFiles };
 }
 async function currentBaseRef() {
     const remote = `origin/${config.baseBranch}`;
